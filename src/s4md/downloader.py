@@ -26,8 +26,9 @@ CRAWLERS: list[Crawler] = [
 ]
 
 
-def update_doc_repo(
+def download_repo(
     repo_path: str,
+    crawlers: list[Crawler] = CRAWLERS,
     delay: float = 0.0,
 ) -> None:
     '''
@@ -54,85 +55,83 @@ def update_doc_repo(
         writer = csv.writer(skipped_f)
         writer.writerow(['parent_url', 'orig_doc_url'])
 
-        for crawler in CRAWLERS:
-            print(crawler.name)
-            for (accepted, doc_info) in crawler.scrape(delay):
-                if not accepted:
+    for crawler in crawlers:
+        print(crawler.name)
+        for (accepted, doc_info) in crawler.scrape(delay):
+            if not accepted:
+                with open(os.path.join(repo_path, 'skipped_documents.csv'), 'a', encoding='utf-8', newline='') as skipped_f:
+                    writer = csv.writer(skipped_f)
                     writer.writerow([doc_info.parent_url, doc_info.orig_doc_url])
-                else:
-                    print('>', doc_info.clean_doc_url)
-                    with tempfile.TemporaryDirectory() as tmp_dir:
-                        tmp_doc_path = os.path.join(tmp_dir, doc_info.orig_fname)
-                        download(doc_info.clean_doc_url, tmp_doc_path, delay)
-                        with open(tmp_doc_path, 'rb') as f:
-                            hash = hashlib.sha256(f.read()).hexdigest()
+            else:
+                print('>', doc_info.clean_doc_url)
+                with tempfile.TemporaryDirectory() as tmp_dir:
+                    tmp_doc_path = os.path.join(tmp_dir, doc_info.orig_fname)
+                    download(doc_info.clean_doc_url, tmp_doc_path, delay)
+                    with open(tmp_doc_path, 'rb') as f:
+                        hash = hashlib.sha256(f.read()).hexdigest()
 
-                        cursor = conn.execute('''
-                            SELECT 1
-                            FROM `documents`
-                            WHERE sha256_hash = :hash
-                            ;
-                        ''', {
-                            'hash': hash,
-                        })
-                        already_downloaded = cursor.fetchone() is not None
+                    cursor = conn.execute('''
+                        SELECT 1
+                        FROM `documents`
+                        WHERE sha256_hash = :hash
+                        ;
+                    ''', {
+                        'hash': hash,
+                    })
+                    already_downloaded = cursor.fetchone() is not None
 
-                        if already_downloaded:
-                            if crawler.is_ordered_by_new:
-                                #break
-                                pass
-                        else:
-                            upload_date = doc_info.upload_date.isoformat() if doc_info.upload_date is not None else None
-                            download_date = datetime.datetime.fromtimestamp(os.path.getmtime(tmp_doc_path))
-                            doc_ext = os.path.splitext(doc_info.orig_fname)[1].lower()
+                    if not already_downloaded:
+                        upload_date = doc_info.upload_date.isoformat() if doc_info.upload_date is not None else None
+                        download_date = datetime.datetime.fromtimestamp(os.path.getmtime(tmp_doc_path))
+                        doc_ext = os.path.splitext(doc_info.orig_fname)[1].lower()
 
-                            with conn:
-                                cursor = conn.execute('''
-                                    INSERT INTO `documents` (
-                                        `parent_url`,
-                                        `orig_doc_url`,
-                                        `clean_doc_url`,
-                                        `orig_fname`,
-                                        `new_fname`,
-                                        `upload_date`,
-                                        `download_date`,
-                                        `sha256_hash`
-                                    )
-                                    VALUES (
-                                        :parent_url,
-                                        :orig_doc_url,
-                                        :clean_doc_url,
-                                        :orig_fname,
-                                        NULL,
-                                        :upload_date,
-                                        :download_date,
-                                        :sha256_hash
-                                    )
-                                    ;
-                                ''', {
-                                    'parent_url': doc_info.parent_url,
-                                    'orig_doc_url': doc_info.orig_doc_url,
-                                    'clean_doc_url': doc_info.clean_doc_url,
-                                    'orig_fname': doc_info.orig_fname,
-                                    'upload_date': upload_date,
-                                    'download_date': download_date,
-                                    'sha256_hash': hash,
-                                })
+                        with conn:
+                            cursor = conn.execute('''
+                                INSERT INTO `documents` (
+                                    `parent_url`,
+                                    `orig_doc_url`,
+                                    `clean_doc_url`,
+                                    `orig_fname`,
+                                    `new_fname`,
+                                    `upload_date`,
+                                    `download_date`,
+                                    `sha256_hash`
+                                )
+                                VALUES (
+                                    :parent_url,
+                                    :orig_doc_url,
+                                    :clean_doc_url,
+                                    :orig_fname,
+                                    NULL,
+                                    :upload_date,
+                                    :download_date,
+                                    :sha256_hash
+                                )
+                                ;
+                            ''', {
+                                'parent_url': doc_info.parent_url,
+                                'orig_doc_url': doc_info.orig_doc_url,
+                                'clean_doc_url': doc_info.clean_doc_url,
+                                'orig_fname': doc_info.orig_fname,
+                                'upload_date': upload_date,
+                                'download_date': download_date,
+                                'sha256_hash': hash,
+                            })
 
-                                doc_id = cursor.lastrowid
-                                new_fname = f'{doc_id:0>4d}{doc_ext}'
-                                conn.execute('''
-                                    UPDATE `documents` SET
-                                        `new_fname` = :new_fname
-                                    WHERE
-                                        id = :doc_id
-                                    ;
-                                ''', {
-                                    'new_fname': new_fname,
-                                    'doc_id': doc_id,
-                                })
+                            doc_id = cursor.lastrowid
+                            new_fname = f'{doc_id:0>4d}{doc_ext}'
+                            conn.execute('''
+                                UPDATE `documents` SET
+                                    `new_fname` = :new_fname
+                                WHERE
+                                    id = :doc_id
+                                ;
+                            ''', {
+                                'new_fname': new_fname,
+                                'doc_id': doc_id,
+                            })
 
-                                os.rename(tmp_doc_path, os.path.join(repo_path, 'documents', new_fname))
+                            os.rename(tmp_doc_path, os.path.join(repo_path, 'documents', new_fname))
         print()
 
     print('Exporting list to CSV')
@@ -165,6 +164,3 @@ def update_doc_repo(
         ''')
         for row in cursor:
             writer.writerow(row)
-
-
-update_doc_repo('data')
